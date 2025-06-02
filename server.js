@@ -49,6 +49,34 @@ function isValidUrl(string) {
   }
 }
 
+// Utility function to recursively move directory contents
+async function moveDirectory(sourceDir, targetDir) {
+  try {
+    // Read all items in source directory
+    const items = await fs.readdir(sourceDir, { withFileTypes: true });
+
+    for (const item of items) {
+      const sourcePath = path.join(sourceDir, item.name);
+      const targetPath = path.join(targetDir, item.name);
+
+      if (item.isDirectory()) {
+        // Create target directory and recursively move contents
+        await fs.mkdir(targetPath, { recursive: true });
+        await moveDirectory(sourcePath, targetPath);
+      } else {
+        // Move file
+        await fs.rename(sourcePath, targetPath);
+      }
+    }
+  } catch (error) {
+    console.error(
+      `Error moving directory from ${sourceDir} to ${targetDir}:`,
+      error
+    );
+    throw error;
+  }
+}
+
 // Gallery-dl download function
 async function downloadWithGalleryDl(url, options = {}) {
   const downloadId = uuidv4();
@@ -61,8 +89,8 @@ async function downloadWithGalleryDl(url, options = {}) {
     const args = [
       "-d",
       downloadDir, // Download directory
-      "--write-metadata", // Write metadata
-      "--write-info-json", // Write info JSON
+      "--write-info-json", // Write info JSON (one file per gallery/post)
+      // Note: Removed --write-metadata to avoid creating JSON for every image
     ];
 
     // Add language option if specified
@@ -151,13 +179,27 @@ async function downloadWithGalleryDl(url, options = {}) {
         downloadProcess.status = "completed";
         console.log(`Download ${downloadId} completed successfully`);
 
-        // Move files to output directory if needed
+        // Move files to output directory
         try {
           const outputPath = path.join(CONFIG.outputDir, downloadId);
-          await fs.mkdir(path.dirname(outputPath), { recursive: true });
+          await fs.mkdir(outputPath, { recursive: true });
 
-          // You can add post-processing logic here (like converting to CBZ)
+          // Move all downloaded content from temp to output directory
+          await moveDirectory(downloadDir, outputPath);
+
           downloadProcess.outputPath = outputPath;
+          console.log(`Files moved to output directory: ${outputPath}`);
+
+          // Clean up temp directory after successful move
+          try {
+            await fs.rm(downloadDir, { recursive: true });
+            console.log(`Cleaned up temp directory: ${downloadDir}`);
+          } catch (cleanupError) {
+            console.warn(
+              `Warning: Failed to cleanup temp directory ${downloadDir}:`,
+              cleanupError
+            );
+          }
         } catch (error) {
           console.error(
             `Error processing completed download ${downloadId}:`,
@@ -332,7 +374,7 @@ app.post("/cleanup", async (req, res) => {
       if (download.endTime && download.endTime < cutoffTime) {
         // Clean up temporary files
         try {
-          await fs.rmdir(download.downloadDir, { recursive: true });
+          await fs.rm(download.downloadDir, { recursive: true });
         } catch (error) {
           console.warn(`Failed to remove directory for download ${id}:`, error);
         }
@@ -396,6 +438,63 @@ app.get("/gallery-dl/info", (req, res) => {
   });
 });
 
+// Process existing downloads in temp directory
+app.post("/process-existing", async (req, res) => {
+  try {
+    const tempDirs = await fs.readdir(CONFIG.tempDir, { withFileTypes: true });
+    let processed = 0;
+    const results = [];
+
+    for (const dirEntry of tempDirs) {
+      if (dirEntry.isDirectory() && dirEntry.name !== ".DS_Store") {
+        const downloadId = dirEntry.name;
+        const sourceDir = path.join(CONFIG.tempDir, downloadId);
+        const targetDir = path.join(CONFIG.outputDir, downloadId);
+
+        try {
+          await fs.mkdir(targetDir, { recursive: true });
+          await moveDirectory(sourceDir, targetDir);
+
+          // Clean up temp directory after successful move
+          await fs.rm(sourceDir, { recursive: true });
+
+          processed++;
+          results.push({
+            downloadId,
+            status: "success",
+            message: `Moved to ${targetDir}`,
+          });
+
+          console.log(`Processed existing download ${downloadId}`);
+        } catch (error) {
+          results.push({
+            downloadId,
+            status: "error",
+            message: error.message,
+          });
+          console.error(
+            `Error processing existing download ${downloadId}:`,
+            error
+          );
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Processed ${processed} existing downloads`,
+      processed,
+      results,
+    });
+  } catch (error) {
+    console.error("Error processing existing downloads:", error);
+    res.status(500).json({
+      error: "Failed to process existing downloads",
+      details: error.message,
+    });
+  }
+});
+
 // Error handler
 app.use((error, req, res, next) => {
   console.error("Unhandled error:", error);
@@ -428,7 +527,7 @@ process.on("SIGINT", async () => {
 
   // Clean up temporary files
   try {
-    await fs.rmdir(CONFIG.tempDir, { recursive: true });
+    await fs.rm(CONFIG.tempDir, { recursive: true });
     console.log("✓ Temporary files cleaned up");
   } catch (error) {
     console.warn("Warning: Failed to clean up temporary files:", error);
@@ -459,6 +558,7 @@ async function startServer() {
     console.log(`  GET  /download/:id/logs - Get download logs`);
     console.log(`  POST /cleanup - Clean up old downloads`);
     console.log(`  GET  /gallery-dl/info - Check gallery-dl availability`);
+    console.log(`  POST /process-existing - Process existing downloads`);
   });
 }
 

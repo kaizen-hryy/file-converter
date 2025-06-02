@@ -125,6 +125,14 @@ Content-Type: application/json
 
 Removes downloads older than specified hours.
 
+### Process Existing Downloads
+
+```
+POST /process-existing
+```
+
+Processes any existing downloads in the temp directory, moving them to the output directory. This is useful for handling downloads that may have been left in the temp directory due to server restarts or unexpected shutdowns.
+
 ### Check Gallery-dl
 
 ```
@@ -201,6 +209,17 @@ The API supports most gallery-dl options through the `options` object:
 - `username`/`password`: Authentication credentials
 - `cookies`: Path to cookies file or browser name
 - `customArgs`: Array of custom gallery-dl arguments
+
+**Note on Metadata**: By default, the server only downloads one `info.json` file per gallery/post to avoid cluttering the download with individual JSON files for each image. If you need per-image metadata, you can add `"--write-metadata"` to the `customArgs` array:
+
+```javascript
+{
+  "url": "https://example.com/gallery",
+  "options": {
+    "customArgs": ["--write-metadata"]
+  }
+}
+```
 
 ## Web Interface
 
